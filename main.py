@@ -1,67 +1,75 @@
 import asyncio
 import random
+import os
 from datetime import datetime, timedelta
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
-TOKEN = "YOUR_BOT_TOKEN"
+# =========================
+# НАСТРОЙКИ
+# =========================
+
+TOKEN = os.getenv("TOKEN")
+
+OWNER_ID = 123456789
+
 MAIN_CHAT_ID = -1003850339565
 WARN_THREAD_ID = 865
 SHOP_THREAD_ID = 952
 
-# 👑 ВЛАДЕЛЕЦ + АДМИНЫ
-OWNER_ID = 123456789
-ADMINS = [OWNER_ID]  # сюда добавляй id админов
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
 users = {}
 warn_messages = {}
 
-# 🎉 Рандомные праздничные эмодзи
-def random_emoji():
-    return random.choice(["🎉", "🎊", "🎈", "✨", "🥳", "🎆", "🪩"])
+# =========================
+# ЭМОДЗИ
+# =========================
 
-# 🔎 Универсальный поиск пользователя
+def random_emoji():
+    return random.choice(["🎉","🎊","🎁","✨","🥳"])
+
+# =========================
+# ПОИСК ПОЛЬЗОВАТЕЛЯ
+# =========================
+
 async def get_target_user(message: Message):
+
     if message.reply_to_message:
         return message.reply_to_message.from_user
 
     parts = message.text.split()
+
     if len(parts) < 2:
         return None
 
-    target_raw = parts[1].replace("@", "")
+    username = parts[1].replace("@","")
 
-    # если ID
-    if target_raw.isdigit():
-        try:
-            member = await bot.get_chat_member(MAIN_CHAT_ID, int(target_raw))
-            return member.user
-        except:
-            return None
-
-    # если username
     try:
-        member = await bot.get_chat_member(MAIN_CHAT_ID, target_raw)
+        member = await bot.get_chat_member(MAIN_CHAT_ID, username)
         return member.user
     except:
         return None
 
+# =========================
+# БАЛЛЫ
+# =========================
 
-# =========================
-# 💰 НАЧИСЛЕНИЕ БАЛЛОВ
-# =========================
-@dp.message(F.text.startswith("#баллы"))
+@dp.message(F.text.lower().startswith("#баллы"))
 async def give_points(message: Message):
-    if message.from_user.id not in ADMINS:
+
+    if message.from_user.id != OWNER_ID:
         return
 
     parts = message.text.split()
-    if len(parts) < 3:
-        return await message.answer("Пример: #баллы @user 10")
 
     try:
         amount = int(parts[-1])
@@ -69,120 +77,120 @@ async def give_points(message: Message):
         return await message.answer("Укажи количество баллов")
 
     target = await get_target_user(message)
-    if not target:
-        return await message.answer("❌ Пользователь не найден")
 
-    users.setdefault(target.id, {
-        "points": 0,
-        "warns": 0,
-        "vacation": None,
-        "vacation_warned": False
+    if not target:
+        return await message.answer("Пользователь не найден")
+
+    users.setdefault(target.id,{
+        "points":0,
+        "warns":0,
+        "vacation":None,
+        "vacation_warned":False
     })
 
     users[target.id]["points"] += amount
-    emoji = random_emoji()
 
-    await message.answer(emoji)
     await message.answer(
-        f"{target.mention_html()}\n"
-        f"Вам начислено <b>{amount}</b> баллов!\n"
-        f"Поздравляем! {emoji}"
+        f"{random_emoji()}\n"
+        f"{target.full_name}\n"
+        f"Баллы начислены: {amount}"
     )
 
+# =========================
+# МОИ БАЛЛЫ
+# =========================
 
-# =========================
-# 🏦 МОИ БАЛЛЫ
-# =========================
 @dp.message(F.text == "!мои баллы")
 async def my_points(message: Message):
-    data = users.get(message.from_user.id, {"points": 0})
+
+    data = users.get(message.from_user.id,{"points":0})
 
     await message.answer(
-        f"🏦 <b>Это ваш личный банк</b>\n\n"
-        f"👤 {message.from_user.mention_html()}\n"
-        f"💰 У вас <b>{data['points']}</b> баллов"
+        f"🏦 Личный банк\n"
+        f"💰 Баллы: {data['points']}"
     )
 
-
 # =========================
-# 🌴 МОЙ ОТГУЛ
+# ВЫГОВОР
 # =========================
-@dp.message(F.text == "!мой отгул")
-async def my_vacation(message: Message):
-    data = users.get(message.from_user.id)
 
-    if not data or not data.get("vacation"):
-        return await message.answer("🌴 У вас нет активного отгула.")
+@dp.message(F.text.lower().startswith("#выговор"))
+async def warn_user(message: Message):
 
-    now = datetime.now()
-    vacation_end = data["vacation"]
-
-    if vacation_end <= now:
-        data["vacation"] = None
-        return await message.answer("🌴 Ваш отгул уже закончился.")
-
-    remaining = vacation_end - now
-    hours = remaining.days * 24 + remaining.seconds // 3600
-    minutes = (remaining.seconds % 3600) // 60
-
-    await message.answer(
-        f"🌴 <b>Отгул активен</b>\n\n"
-        f"⏳ Осталось: {hours} ч. {minutes} мин.\n"
-        f"📅 До: {vacation_end.strftime('%d.%m.%Y %H:%M')}"
-    )
-
-
-# =========================
-# 👑 !отгулы (АДМИНЫ)
-# =========================
-@dp.message(F.text == "!отгулы")
-async def active_vacations(message: Message):
-    if message.from_user.id not in ADMINS:
+    if message.from_user.id != OWNER_ID:
         return
 
-    now = datetime.now()
-    text = "🌴 <b>Сейчас отдыхают:</b>\n\n"
-    found = False
+    if not message.reply_to_message:
+        return await message.answer("Ответь на пользователя")
 
-    for user_id, data in users.items():
-        if data.get("vacation") and data["vacation"] > now:
-            member = await bot.get_chat_member(MAIN_CHAT_ID, user_id)
-            remaining = data["vacation"] - now
-            hours = remaining.days * 24 + remaining.seconds // 3600
-            minutes = (remaining.seconds % 3600) // 60
+    parts = message.text.split("\n")
 
-            text += (
-                f"{member.user.mention_html()}\n"
-                f"⏳ {hours} ч. {minutes} мин.\n\n"
-            )
-            found = True
+    if len(parts) < 2:
+        return await message.answer("Причину напиши с новой строки")
 
-    if not found:
-        text = "🌴 Сейчас никто не отдыхает."
+    reason = parts[1]
 
-    await message.answer(text)
+    target = message.reply_to_message.from_user
 
+    users.setdefault(target.id,{
+        "points":0,
+        "warns":0,
+        "vacation":None
+    })
+
+    users[target.id]["warns"] += 1
+
+    warns = users[target.id]["warns"]
+
+    if warns == 1:
+        status = "⚠ Выговор 1/3 Будь осторожнее"
+    elif warns == 2:
+        status = "⚠ Выговор 2/3"
+    else:
+        status = "⚠ Выговор 3/3\nЖаль, но вы будете разжалованы."
+
+    text = (
+        "━━━━━━━━━━━━━━━\n"
+        f"{status}\n"
+        f"👤 {target.full_name}\n"
+        f"👮 Выдал: {message.from_user.full_name}\n"
+        f"📝 Причина:\n{reason}\n"
+        "━━━━━━━━━━━━━━━"
+    )
+
+    sent = await bot.send_message(
+        MAIN_CHAT_ID,
+        text,
+        message_thread_id=WARN_THREAD_ID
+    )
+
+    warn_messages[target.id] = sent.message_id
 
 # =========================
-# 🛒 МАГАЗИН (только ветка 952)
+# МАГАЗИН
 # =========================
+
 @dp.message(F.text == "!магазин")
 async def shop(message: Message):
+
     if message.message_thread_id != SHOP_THREAD_ID:
         return
 
     await message.answer(
-        "🛒 <b>Магазин</b>\n\n"
+        "🛒 Магазин\n\n"
+        "🌴 Отгул — 15 баллов\n"
         "🎯 Снять выговор — 30 баллов\n"
-        "🌴 Отгул — 15 баллов"
+        "!купить отгул\n"
+        "!купить выговор"
     )
 
+# =========================
+# ПОКУПКИ
+# =========================
 
-# =========================
-# 🛍 ПОКУПКА
-# =========================
-@dp.message(F.text.startswith("!купить"))
+@dp.message(F.text.lower().startswith("!купить"))
 async def buy(message: Message):
+
     if message.message_thread_id != SHOP_THREAD_ID:
         return
 
@@ -190,16 +198,18 @@ async def buy(message: Message):
     data = users.get(user.id)
 
     if not data:
-        return await message.answer("У вас нет баллов.")
+        return await message.answer("Нет баллов")
 
     text = message.text.lower()
 
-    # 🌴 Отгул
+    # Отгул
     if "отгул" in text:
+
         if data["points"] < 15:
-            return await message.answer("Недостаточно баллов.")
+            return await message.answer("Недостаточно баллов")
 
         data["points"] -= 15
+
         now = datetime.now()
 
         if not data["vacation"] or data["vacation"] < now:
@@ -207,80 +217,83 @@ async def buy(message: Message):
         else:
             data["vacation"] += timedelta(days=1)
 
-        data["vacation_warned"] = False
-
         await message.answer(
-            f"🌴 Отгул активен до {data['vacation'].strftime('%d.%m.%Y %H:%M')}"
+            f"🌴 Отгул до {data['vacation'].strftime('%d.%m.%Y %H:%M')}"
         )
 
-    # 🎯 Снять выговор
+    # Снятие выговора
     elif "выговор" in text:
+
         if data["points"] < 30:
-            return await message.answer("Недостаточно баллов.")
+            return await message.answer("Недостаточно баллов")
+
         if data["warns"] <= 0:
-            return await message.answer("У вас нет выговоров.")
+            return await message.answer("Нет выговоров")
 
         data["points"] -= 30
         data["warns"] -= 1
 
         if user.id in warn_messages:
             try:
-                await bot.delete_message(MAIN_CHAT_ID, warn_messages[user.id])
+                await bot.delete_message(
+                    MAIN_CHAT_ID,
+                    warn_messages[user.id]
+                )
             except:
                 pass
 
         await message.answer(
             f"✅ Выговор снят\n"
-            f"📊 Осталось: {data['warns']}/3"
+            f"Осталось: {data['warns']}/3"
         )
 
+# =========================
+# РЕЙТИНГ
+# =========================
+
+@dp.message(F.text == "!рейтинг")
+async def rating(message: Message):
+
+    if not users:
+        return await message.answer("Нет данных")
+
+    sorted_users = sorted(
+        users.items(),
+        key=lambda x: x[1]["points"],
+        reverse=True
+    )
+
+    text = "🏆 Рейтинг\n\n"
+
+    medals = ["🥇","🥈","🥉"]
+
+    for i,(uid,data) in enumerate(sorted_users[:10]):
+
+        try:
+            member = await bot.get_chat_member(MAIN_CHAT_ID, uid)
+            name = member.user.full_name
+        except:
+            name = f"ID {uid}"
+
+        extra = ""
+        if i == 0:
+            extra = "Самый лучший!"
+        elif i == 1:
+            extra = "Ты почти лучший!"
+        elif i == 2:
+            extra = "Работай усерднее!"
+
+        medal = medals[i] if i < 3 else "🔹"
+
+        text += f"{medal} {name} — {data['points']} {extra}\n"
+
+    await message.answer(text)
 
 # =========================
-# ⏰ ФОНОВАЯ ПРОВЕРКА ОТГУЛОВ
+# ЗАПУСК
 # =========================
-async def check_vacations():
-    while True:
-        now = datetime.now()
 
-        for user_id, data in users.items():
-            if not data.get("vacation"):
-                continue
-
-            remaining = data["vacation"] - now
-
-            # 🔔 за 1 час
-            if (
-                remaining.total_seconds() <= 3600
-                and remaining.total_seconds() > 0
-                and not data.get("vacation_warned")
-            ):
-                member = await bot.get_chat_member(MAIN_CHAT_ID, user_id)
-                await bot.send_message(
-                    MAIN_CHAT_ID,
-                    f"🔔 {member.user.mention_html()}\n"
-                    f"До окончания отгула остался 1 час!"
-                )
-                data["vacation_warned"] = True
-
-            # ⏰ окончание
-            if data["vacation"] <= now:
-                member = await bot.get_chat_member(MAIN_CHAT_ID, user_id)
-                await bot.send_message(
-                    MAIN_CHAT_ID,
-                    f"⏰ {member.user.mention_html()}\n"
-                    f"Ваш отгул окончен, приступайте к работе!"
-                )
-                data["vacation"] = None
-                data["vacation_warned"] = False
-
-        await asyncio.sleep(60)
-
-
-# =========================
-# 🚀 ЗАПУСК
-# =========================
 async def main():
-    asyncio.create_task(check_vacations())
     await dp.start_polling(bot)
 
 asyncio.run(main())
