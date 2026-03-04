@@ -1,299 +1,286 @@
-import asyncio
-import random
+import telebot
+import json
+import re
 import os
-from datetime import datetime, timedelta
-
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
-
-# =========================
-# НАСТРОЙКИ
-# =========================
+import datetime
 
 TOKEN = os.getenv("TOKEN")
+bot = telebot.TeleBot(TOKEN)
 
-OWNER_ID = 123456789
+OWNER_ID = 7548603865
 
-MAIN_CHAT_ID = -1003850339565
-WARN_THREAD_ID = 865
-SHOP_THREAD_ID = 952
-
-bot = Bot(
-    token=TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
-
-dp = Dispatcher()
-
-users = {}
-warn_messages = {}
+GROUP_ID = -1003850339565
+BALANCE_THREAD = 685
+WARNING_THREAD = 865
+SHOP_THREAD = 952
 
 # =========================
-# ЭМОДЗИ
+# БАЗА
 # =========================
 
-def random_emoji():
-    return random.choice(["🎉","🎊","🎁","✨","🥳"])
-
-# =========================
-# ПОИСК ПОЛЬЗОВАТЕЛЯ
-# =========================
-
-async def get_target_user(message: Message):
-
-    if message.reply_to_message:
-        return message.reply_to_message.from_user
-
-    parts = message.text.split()
-
-    if len(parts) < 2:
-        return None
-
-    username = parts[1].replace("@","")
-
+def load_db():
     try:
-        member = await bot.get_chat_member(MAIN_CHAT_ID, username)
-        return member.user
+        with open("scores.json", "r", encoding="utf-8") as f:
+            return json.load(f)
     except:
-        return None
+        return {}
+
+def save_db(data):
+    with open("scores.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4, default=str)
+
+scores = load_db()
 
 # =========================
-# БАЛЛЫ
+# ПОИСК
 # =========================
 
-@dp.message(F.text.lower().startswith("#баллы"))
-async def give_points(message: Message):
+def find_user(identifier):
+    identifier = identifier.lower()
 
-    if message.from_user.id != OWNER_ID:
+    for uid, data in scores.items():
+        if identifier == uid:
+            return uid
+        if identifier in data["name"].lower():
+            return uid
+    return None
+
+# =========================
+# ДОБАВЛЕНИЕ БАЛЛОВ
+# =========================
+
+@bot.message_handler(func=lambda m: m.text and "#баллы" in m.text.lower())
+def add_points(message):
+
+    uid = str(message.from_user.id)
+    name = message.from_user.first_name
+
+    match = re.search(r"#баллы\s*[+]?\s*(\d+)", message.text.lower())
+    if not match:
         return
 
-    parts = message.text.split()
+    points = int(match.group(1))
 
-    try:
-        amount = int(parts[-1])
-    except:
-        return await message.answer("Укажи количество баллов")
+    if uid not in scores:
+        scores[uid] = {
+            "name": name,
+            "points": 0,
+            "warnings": 0,
+            "vacation_end": None
+        }
 
-    target = await get_target_user(message)
+    scores[uid]["name"] = name
+    scores[uid]["points"] += points
+    save_db(scores)
 
-    if not target:
-        return await message.answer("Пользователь не найден")
+    bot.send_message(GROUP_ID, "🎁", message_thread_id=BALANCE_THREAD)
 
-    users.setdefault(target.id,{
-        "points":0,
-        "warns":0,
-        "vacation":None,
-        "vacation_warned":False
-    })
+    bot.forward_message(
+        GROUP_ID,
+        message.chat.id,
+        message.message_id,
+        message_thread_id=BALANCE_THREAD
+    )
 
-    users[target.id]["points"] += amount
+    bot.send_message(
+        GROUP_ID,
+        f"━━━━━━━━━━━━━━━\n"
+        f"👤 {name}\n"
+        f"🏦 Твой банк: {scores[uid]['points']} баллов\n"
+        f"━━━━━━━━━━━━━━━",
+        message_thread_id=BALANCE_THREAD
+    )
 
-    await message.answer(
-        f"{random_emoji()}\n"
-        f"{target.full_name}\n"
-        f"Баллы начислены: {amount}"
+    bot.reply_to(
+        message,
+        f"💰 Баллы {points} добавлены!\n"
+        f"🏦 Сейчас у тебя {scores[uid]['points']} баллов"
     )
 
 # =========================
 # МОИ БАЛЛЫ
 # =========================
 
-@dp.message(F.text == "!мои баллы")
-async def my_points(message: Message):
+@bot.message_handler(func=lambda m: m.text and "!мои баллы" in m.text.lower())
+def my_balance(message):
 
-    data = users.get(message.from_user.id,{"points":0})
+    uid = str(message.from_user.id)
 
-    await message.answer(
-        f"🏦 Личный банк\n"
-        f"💰 Баллы: {data['points']}"
-    )
-
-# =========================
-# ВЫГОВОР
-# =========================
-
-@dp.message(F.text.lower().startswith("#выговор"))
-async def warn_user(message: Message):
-
-    if message.from_user.id != OWNER_ID:
+    if uid not in scores:
+        bot.reply_to(message, "У вас пока 0 баллов")
         return
 
-    if not message.reply_to_message:
-        return await message.answer("Ответь на пользователя")
-
-    parts = message.text.split("\n")
-
-    if len(parts) < 2:
-        return await message.answer("Причину напиши с новой строки")
-
-    reason = parts[1]
-
-    target = message.reply_to_message.from_user
-
-    users.setdefault(target.id,{
-        "points":0,
-        "warns":0,
-        "vacation":None
-    })
-
-    users[target.id]["warns"] += 1
-
-    warns = users[target.id]["warns"]
-
-    if warns == 1:
-        status = "⚠ Выговор 1/3 Будь осторожнее"
-    elif warns == 2:
-        status = "⚠ Выговор 2/3"
-    else:
-        status = "⚠ Выговор 3/3\nЖаль, но вы будете разжалованы."
-
-    text = (
-        "━━━━━━━━━━━━━━━\n"
-        f"{status}\n"
-        f"👤 {target.full_name}\n"
-        f"👮 Выдал: {message.from_user.full_name}\n"
-        f"📝 Причина:\n{reason}\n"
-        "━━━━━━━━━━━━━━━"
+    bot.reply_to(
+        message,
+        f"🏦 Это ваш личный банк\n\n"
+        f"💰 У вас {scores[uid]['points']} баллов"
     )
 
-    sent = await bot.send_message(
-        MAIN_CHAT_ID,
-        text,
-        message_thread_id=WARN_THREAD_ID
-    )
-
-    warn_messages[target.id] = sent.message_id
-
 # =========================
-# МАГАЗИН
+# РЕЙТИНГ
 # =========================
 
-@dp.message(F.text == "!магазин")
-async def shop(message: Message):
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("!баллы"))
+def rating(message):
 
-    if message.message_thread_id != SHOP_THREAD_ID:
+    if not scores:
+        bot.reply_to(message, "Нет участников")
         return
 
-    await message.answer(
+    sorted_users = sorted(
+        scores.values(),
+        key=lambda x: x["points"],
+        reverse=True
+    )
+
+    text = "🏆 Рейтинг участников\n\n"
+
+    for i, user in enumerate(sorted_users, 1):
+
+        medal = "▫"
+        if i == 1:
+            medal = "🥇"
+        elif i == 2:
+            medal = "🥈"
+        elif i == 3:
+            medal = "🥉"
+
+        text += f"{medal} {user['name']} — {user['points']} баллов\n"
+
+    bot.reply_to(message, text)
+
+# =========================
+# МАГАЗИН (ТОЛЬКО 952)
+# =========================
+
+@bot.message_handler(func=lambda m: m.text and "!магазин" in m.text.lower())
+def shop(message):
+
+    if message.message_thread_id != SHOP_THREAD:
+        return
+
+    bot.reply_to(
+        message,
         "🛒 Магазин\n\n"
-        "🌴 Отгул — 15 баллов\n"
         "🎯 Снять выговор — 30 баллов\n"
-        "!купить отгул\n"
-        "!купить выговор"
+        "🌴 Отгул — 15 баллов (суммируется)\n\n"
+        "Команды:\n"
+        "!купить выговор\n"
+        "!купить отгул"
     )
 
 # =========================
 # ПОКУПКИ
 # =========================
 
-@dp.message(F.text.lower().startswith("!купить"))
-async def buy(message: Message):
+@bot.message_handler(func=lambda m: m.text and "!купить" in m.text.lower())
+def buy(message):
 
-    if message.message_thread_id != SHOP_THREAD_ID:
+    if message.message_thread_id != SHOP_THREAD:
         return
 
-    user = message.from_user
-    data = users.get(user.id)
+    uid = str(message.from_user.id)
 
-    if not data:
-        return await message.answer("Нет баллов")
+    if uid not in scores:
+        bot.reply_to(message, "❌ У тебя нет баллов")
+        return
 
     text = message.text.lower()
 
-    # Отгул
-    if "отгул" in text:
+    # ===== СНЯТЬ ВЫГОВОР =====
+    if "выговор" in text:
 
-        if data["points"] < 15:
-            return await message.answer("Недостаточно баллов")
+        if scores[uid]["points"] < 30:
+            bot.reply_to(message, "❌ Нужно 30 баллов")
+            return
 
-        data["points"] -= 15
+        scores[uid]["points"] -= 30
+        scores[uid]["warnings"] = max(0, scores[uid]["warnings"] - 1)
 
-        now = datetime.now()
+        bot.reply_to(
+            message,
+            f"✅ Выговор снят!\n"
+            f"⚠ Осталось: {scores[uid]['warnings']}"
+        )
 
-        if not data["vacation"] or data["vacation"] < now:
-            data["vacation"] = now + timedelta(days=1)
+    # ===== ОТГУЛ =====
+    elif "отгул" in text:
+
+        if scores[uid]["points"] < 15:
+            bot.reply_to(message, "❌ Нужно 15 баллов")
+            return
+
+        scores[uid]["points"] -= 15
+
+        now = datetime.datetime.now()
+
+        if not scores[uid]["vacation_end"]:
+            end_time = now + datetime.timedelta(hours=24)
         else:
-            data["vacation"] += timedelta(days=1)
-
-        await message.answer(
-            f"🌴 Отгул до {data['vacation'].strftime('%d.%m.%Y %H:%M')}"
-        )
-
-    # Снятие выговора
-    elif "выговор" in text:
-
-        if data["points"] < 30:
-            return await message.answer("Недостаточно баллов")
-
-        if data["warns"] <= 0:
-            return await message.answer("Нет выговоров")
-
-        data["points"] -= 30
-        data["warns"] -= 1
-
-        if user.id in warn_messages:
             try:
-                await bot.delete_message(
-                    MAIN_CHAT_ID,
-                    warn_messages[user.id]
+                current_end = datetime.datetime.strptime(
+                    scores[uid]["vacation_end"],
+                    "%Y-%m-%d %H:%M:%S.%f"
                 )
+                if current_end < now:
+                    current_end = now
             except:
-                pass
+                current_end = now
 
-        await message.answer(
-            f"✅ Выговор снят\n"
-            f"Осталось: {data['warns']}/3"
+            end_time = current_end + datetime.timedelta(hours=24)
+
+        scores[uid]["vacation_end"] = end_time.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        bot.reply_to(
+            message,
+            f"🌴 Отгул продлён!\n"
+            f"До: {end_time.strftime('%d.%m.%Y %H:%M')}"
         )
 
+    save_db(scores)
+
 # =========================
-# РЕЙТИНГ
+# ВЫГОВОРЫ
 # =========================
 
-@dp.message(F.text == "!рейтинг")
-async def rating(message: Message):
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("#выговор"))
+def warning(message):
 
-    if not users:
-        return await message.answer("Нет данных")
+    admins = [a.user.id for a in bot.get_chat_administrators(message.chat.id)]
 
-    sorted_users = sorted(
-        users.items(),
-        key=lambda x: x[1]["points"],
-        reverse=True
+    if message.from_user.id not in admins:
+        return
+
+    match = re.search(r"#выговор\s+@?(\w+)", message.text.lower())
+    if not match:
+        bot.reply_to(message, "Укажи пользователя")
+        return
+
+    username = match.group(1)
+    parts = message.text.split("\n")
+    reason = parts[1] if len(parts) > 1 else "Причина не указана"
+
+    target = find_user(username)
+
+    if not target:
+        bot.reply_to(message, "❌ Пользователь не найден")
+        return
+
+    scores[target]["warnings"] += 1
+    num = scores[target]["warnings"]
+
+    text = (
+        f"━━━━━━━━━━━━━━━\n"
+        f"⚠ Выговор {num}/3\n"
+        f"👤 {scores[target]['name']}\n"
+        f"👮 Выдал: {message.from_user.first_name}\n\n"
+        f"📝 Причина:\n{reason}\n"
+        f"━━━━━━━━━━━━━━━"
     )
 
-    text = "🏆 Рейтинг\n\n"
+    bot.send_message(GROUP_ID, text, message_thread_id=WARNING_THREAD)
 
-    medals = ["🥇","🥈","🥉"]
+    save_db(scores)
 
-    for i,(uid,data) in enumerate(sorted_users[:10]):
-
-        try:
-            member = await bot.get_chat_member(MAIN_CHAT_ID, uid)
-            name = member.user.full_name
-        except:
-            name = f"ID {uid}"
-
-        extra = ""
-        if i == 0:
-            extra = "Самый лучший!"
-        elif i == 1:
-            extra = "Ты почти лучший!"
-        elif i == 2:
-            extra = "Работай усерднее!"
-
-        medal = medals[i] if i < 3 else "🔹"
-
-        text += f"{medal} {name} — {data['points']} {extra}\n"
-
-    await message.answer(text)
-
-# =========================
-# ЗАПУСК
-# =========================
-
-async def main():
-    await dp.start_polling(bot)
-
-asyncio.run(main())
+print("Bot started")
+bot.infinity_polling()
