@@ -1,41 +1,53 @@
 import asyncio
 import random
 from datetime import datetime, timedelta
+import os
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
-# =========================
+# ======================
 # НАСТРОЙКИ
-# =========================
+# ======================
 
-import os
 TOKEN = os.getenv("TOKEN")
 
 OWNER_ID = 123456789
 
-WORK_CHAT_ID = -1003793311517      # Чат где считается активность
-ADMIN_ROLE_CHAT_ID = -1003850339565  # Чат где выдаётся роль
+WORK_CHAT_ID = -1003793311517
+ADMIN_ROLE_CHAT_ID = -1003850339565
+WARN_THREAD_ID = 865
+SHOP_THREAD_ID = 952
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(
+    token=TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+
 dp = Dispatcher()
 
 users = {}
 activity = {}
 warn_messages = {}
 
-# =========================
-# РАНДОМ ЭМОДЗИ
-# =========================
+# ======================
+# ПРОВЕРКА АДМИНА
+# ======================
 
-def random_emoji():
-    return random.choice(["🎉","🎊","🎈","✨","🥳","🎁"])
+async def is_admin(user_id, chat_id):
+    try:
+        admins = await bot.get_chat_administrators(chat_id)
+        return user_id in [a.user.id for a in admins]
+    except:
+        return False
 
-# =========================
+# ======================
 # ПОИСК ПОЛЬЗОВАТЕЛЯ
-# =========================
+# ======================
 
-async def get_target_user(message: Message):
+async def find_user(message: Message):
 
     if message.reply_to_message:
         return message.reply_to_message.from_user
@@ -52,109 +64,16 @@ async def get_target_user(message: Message):
     except:
         return None
 
-# =========================
-# АКТИВНОСТЬ (ТОЛЬКО АДМИНЫ)
-# =========================
+# ======================
+# РАНДОМ ЭМОДЗИ
+# ======================
 
-@dp.message()
-async def track_activity(message: Message):
+def emoji():
+    return random.choice(["🎉","🎊","🎁","✨","🥳"])
 
-    if message.chat.id != WORK_CHAT_ID:
-        return
-
-    try:
-        admins = [a.user.id for a in await bot.get_chat_administrators(WORK_CHAT_ID)]
-        if message.from_user.id not in admins:
-            return
-    except:
-        return
-
-    uid = message.from_user.id
-    now = datetime.now()
-
-    activity.setdefault(uid, {"messages": [], "last_active": None})
-
-    activity[uid]["messages"].append(now)
-    activity[uid]["last_active"] = now
-
-    activity[uid]["messages"] = [
-        t for t in activity[uid]["messages"]
-        if now - t <= timedelta(days=1)
-    ]
-
-# =========================
-# ПОСМОТРЕТЬ АКТИВНОСТЬ
-# =========================
-
-@dp.message(F.text.startswith("!посмотреть активность"))
-async def check_activity(message: Message):
-
-    if message.chat.id != WORK_CHAT_ID:
-        return
-
-    try:
-        admins_ids = [a.user.id for a in await bot.get_chat_administrators(WORK_CHAT_ID)]
-    except:
-        admins_ids = []
-
-    if message.from_user.id not in admins_ids:
-        return
-
-    target = None
-
-    if message.reply_to_message:
-        target = message.reply_to_message.from_user
-    else:
-        parts = message.text.split()
-
-        if len(parts) >= 3:
-            target_name = parts[2].replace("@","")
-
-            try:
-                member = await bot.get_chat_member(WORK_CHAT_ID, target_name)
-                target = member.user
-            except:
-                pass
-
-    if not target:
-        return await message.answer("❌ Пользователь не найден")
-
-    # Только админы
-    try:
-        if target.id not in admins_ids:
-            return await message.answer("❌ Можно смотреть только админов")
-    except:
-        pass
-
-    data = activity.get(target.id)
-
-    if not data:
-        return await message.answer(
-            f"{target.mention_html()}\n"
-            "📊 Сообщений за 24ч: 0\n"
-            "🕒 Последний актив: нет данных"
-        )
-
-    now = datetime.now()
-
-    msgs = [
-        t for t in data["messages"]
-        if now - t <= timedelta(days=1)
-    ]
-
-    last_active = data["last_active"]
-
-    last_text = last_active.strftime("%d.%m.%Y %H:%M") if last_active else "нет данных"
-
-    await message.answer(
-        f"{target.mention_html()}\n\n"
-        f"📊 Сообщений за 24ч: <b>{len(msgs)}</b>\n"
-        f"🕒 Последний актив: <b>{last_text}</b>"
-    )
-
-# =========================
+# ======================
 # БАЛЛЫ
-# =========================
+# ======================
 
 @dp.message(F.text.startswith("#баллы"))
 async def give_points(message: Message):
@@ -163,17 +82,15 @@ async def give_points(message: Message):
         return
 
     parts = message.text.split()
-    if len(parts) < 3:
-        return
 
     try:
         amount = int(parts[-1])
     except:
         return
 
-    target = await get_target_user(message)
+    target = await find_user(message)
     if not target:
-        return
+        return await message.answer("Пользователь не найден")
 
     users.setdefault(target.id,{
         "points":0,
@@ -185,43 +102,145 @@ async def give_points(message: Message):
     users[target.id]["points"] += amount
 
     await message.answer(
-        f"{random_emoji()} {target.mention_html()}\n"
-        f"Вам начислено {amount} баллов!"
+        f"{emoji()} {target.mention_html()}\n"
+        f"Твои баллы {amount} добавлены в твой личный банк!"
     )
 
-# =========================
-# ОТГУЛЫ + РОЛЬ
-# =========================
+# ======================
+# МОИ БАЛЛЫ
+# ======================
 
-async def give_rest_role(user_id):
-    try:
-        await bot.promote_chat_member(
-            ADMIN_ROLE_CHAT_ID,
-            user_id,
-            can_manage_chat=False
+@dp.message(F.text == "!мои баллы")
+async def my_points(message: Message):
+
+    data = users.get(message.from_user.id,{"points":0})
+
+    await message.answer(
+        f"🏦 Личный банк\n"
+        f"💰 {message.from_user.mention_html()}\n"
+        f"Баллы: {data['points']}"
+    )
+
+# ======================
+# АКТИВНОСТЬ
+# ======================
+
+@dp.message()
+async def track_activity(message: Message):
+
+    if message.chat.id != WORK_CHAT_ID:
+        return
+
+    if not await is_admin(message.from_user.id, WORK_CHAT_ID):
+        return
+
+    uid = message.from_user.id
+    now = datetime.now()
+
+    activity.setdefault(uid,{"messages":[],"last_active":None})
+
+    activity[uid]["messages"].append(now)
+    activity[uid]["last_active"] = now
+
+    activity[uid]["messages"] = [
+        t for t in activity[uid]["messages"]
+        if now - t <= timedelta(days=1)
+    ]
+
+# ======================
+# ПОСМОТРЕТЬ АКТИВНОСТЬ
+# ======================
+
+@dp.message(F.text.startswith("!посмотреть активность"))
+async def check_activity(message: Message):
+
+    if message.chat.id != WORK_CHAT_ID:
+        return
+
+    if not await is_admin(message.from_user.id, WORK_CHAT_ID):
+        return
+
+    target = await find_user(message)
+    if not target:
+        return await message.answer("Пользователь не найден")
+
+    if not await is_admin(target.id, WORK_CHAT_ID):
+        return await message.answer("Можно смотреть только админов")
+
+    data = activity.get(target.id)
+
+    if not data:
+        return await message.answer("Нет активности")
+
+    now = datetime.now()
+
+    msgs = [t for t in data["messages"] if now - t <= timedelta(days=1)]
+
+    last = data["last_active"]
+    last_text = last.strftime("%d.%m.%Y %H:%M") if last else "нет данных"
+
+    await message.answer(
+        f"{target.mention_html()}\n"
+        f"📊 За 24ч: {len(msgs)} сообщений\n"
+        f"🕒 Последний актив: {last_text}"
+    )
+
+# ======================
+# МАГАЗИН
+# ======================
+
+@dp.message(F.text == "!магазин")
+async def shop(message: Message):
+
+    if message.message_thread_id != SHOP_THREAD_ID:
+        return
+
+    await message.answer(
+        "🛒 Магазин\n"
+        "🌴 Отгул — 15 баллов\n"
+        "🎯 Снять выговор — 30 баллов\n\n"
+        "!купить отгул\n"
+        "!купить выговор"
+    )
+
+# ======================
+# ПОКУПКИ
+# ======================
+
+@dp.message(F.text.startswith("!купить"))
+async def buy(message: Message):
+
+    if message.message_thread_id != SHOP_THREAD_ID:
+        return
+
+    data = users.get(message.from_user.id)
+    if not data:
+        return
+
+    text = message.text.lower()
+
+    # Отгул
+    if "отгул" in text:
+
+        if data["points"] < 15:
+            return await message.answer("Недостаточно баллов")
+
+        data["points"] -= 15
+
+        now = datetime.now()
+
+        if not data["vacation"] or data["vacation"] < now:
+            data["vacation"] = now + timedelta(days=1)
+        else:
+            data["vacation"] += timedelta(days=1)
+
+        await message.answer(
+            f"🌴 Отгул до {data['vacation'].strftime('%d.%m.%Y %H:%M')}"
         )
 
-        await bot.set_chat_administrator_custom_title(
-            ADMIN_ROLE_CHAT_ID,
-            user_id,
-            "🌴 Отдыхает"
-        )
-    except:
-        pass
-
-async def remove_rest_role(user_id):
-    try:
-        await bot.set_chat_administrator_custom_title(
-            ADMIN_ROLE_CHAT_ID,
-            user_id,
-            ""
-        )
-    except:
-        pass
-
-# =========================
-# ФОНОВАЯ ПРОВЕРКА ОТГУЛОВ
-# =========================
+# ======================
+# ПРОВЕРКА ОТГУЛОВ
+# ======================
 
 async def check_vacations():
 
@@ -236,46 +255,33 @@ async def check_vacations():
 
             remaining = data["vacation"] - now
 
-            # 1 час предупреждение
-            if (
-                remaining.total_seconds() <= 3600
-                and remaining.total_seconds() > 0
-                and not data.get("vacation_warned")
-            ):
-                try:
-                    member = await bot.get_chat_member(WORK_CHAT_ID, uid)
+            if remaining.total_seconds() <= 3600 and not data.get("vacation_warned"):
 
-                    await bot.send_message(
-                        WORK_CHAT_ID,
-                        f"🔔 {member.user.mention_html()}\n"
-                        "До окончания отгула остался 1 час!"
-                    )
+                member = await bot.get_chat_member(WORK_CHAT_ID, uid)
 
-                    data["vacation_warned"] = True
-                except:
-                    pass
+                await bot.send_message(
+                    WORK_CHAT_ID,
+                    f"🔔 {member.user.mention_html()} 1 час до конца отгула"
+                )
 
-            # окончание
+                data["vacation_warned"] = True
+
             if data["vacation"] <= now:
 
                 member = await bot.get_chat_member(WORK_CHAT_ID, uid)
 
-                await remove_rest_role(uid)
-
                 await bot.send_message(
                     WORK_CHAT_ID,
-                    f"⏰ {member.user.mention_html()}\n"
-                    "Ваш отгул окончен, приступайте к работе!"
+                    f"⏰ {member.user.mention_html()} Отгул окончен"
                 )
 
                 data["vacation"] = None
-                data["vacation_warned"] = False
 
         await asyncio.sleep(60)
 
-# =========================
+# ======================
 # ЗАПУСК
-# =========================
+# ======================
 
 async def main():
     asyncio.create_task(check_vacations())
