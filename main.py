@@ -2,172 +2,300 @@ import telebot
 import json
 import re
 import os
+import random
+import datetime
 
 TOKEN = os.getenv("TOKEN")
 
 bot = telebot.TeleBot(TOKEN)
 
 OWNER_ID = 7548603865
+GROUP_ID = -1003850339565
 
-# =========================
+BALANCE_THREAD = 685
+WARNING_THREAD = 865
+
+# =====================
 # БАЗА ДАННЫХ
-# =========================
+# =====================
 
-def load_json():
+def load_scores():
     try:
         with open("scores.json", "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
-def save_json(data):
+def save_scores(data):
     with open("scores.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-scores = load_json()
+scores = load_scores()
 
-DETAIL_TEXT = "Владелец пока не добавил описание"
+# =====================
+# ДАННЫЕ
+# =====================
 
-# =========================
+vacation_time = {}
+purchase_history = []
+
+phrases = [
+    "Так держать!",
+    "Молодец!",
+    "Хорошо постарался!",
+    "Отличная работа!",
+    "Продолжай в том же духе!"
+]
+
+# =====================
+# ПОИСК ПОЛЬЗОВАТЕЛЯ
+# =====================
+
+def find_user(username):
+    username = username.lower()
+    for uid, data in scores.items():
+        if username in data["name"].lower():
+            return uid
+    return None
+
+# =====================
 # ДОБАВЛЕНИЕ БАЛЛОВ
-# =========================
+# =====================
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("#баллы"))
+@bot.message_handler(func=lambda m: m.text and re.search(r"#баллы", m.text.lower()))
 def add_points(message):
 
-    user_id = str(message.from_user.id)
-    user_name = message.from_user.first_name
-
-    match = re.search(r"#баллы\s*[+]?\s*(\d+)", message.text.lower())
-    if not match:
+    if re.search(r"#балы", message.text.lower()):
+        bot.reply_to(message, "Ты неправильно подал заявку! Посмотри как правильно и повтори!")
         return
 
-    points = int(match.group(1))
-
-    if user_id not in scores:
-        scores[user_id] = {"name": user_name, "points": 0}
-
-    scores[user_id]["points"] += points
-
-    save_json(scores)
-
-    bot.reply_to(
-        message,
-        f"Ваши баллы добавлены в личный банк!\nТеперь: {scores[user_id]['points']} баллов"
+    bot.forward_message(
+        GROUP_ID,
+        message.chat.id,
+        message.message_id,
+        message_thread_id=BALANCE_THREAD
     )
 
-# =========================
-# СНЯТИЕ БАЛЛОВ (АДМИНЫ)
-# =========================
+    uid = str(message.from_user.id)
+    name = message.from_user.first_name
 
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("-баллы"))
-def remove_points(message):
+    match_owner = re.search(r"#баллы\s+@?(\w+)\s+(\d+)", message.text.lower())
+    match_self = re.search(r"#баллы\s+(\d+)", message.text.lower())
 
-    if message.from_user.id not in [
-        admin.user.id for admin in bot.get_chat_administrators(message.chat.id)
-    ]:
-        bot.reply_to(message, "Только админы могут снимать баллы")
+    # Владелец может добавлять другим
+    if match_owner and message.from_user.id == OWNER_ID:
+
+        username = match_owner.group(1)
+        points = int(match_owner.group(2))
+
+        target = find_user(username)
+
+        if not target:
+            bot.reply_to(message, "Пользователь не найден")
+            return
+
+        scores[target]["points"] += points
+
+    else:
+
+        if not match_self:
+            return
+
+        points = int(match_self.group(1))
+
+        if uid not in scores:
+            scores[uid] = {"name": name, "points": 0, "warnings": 0}
+
+        scores[uid]["points"] += points
+
+        bot.reply_to(
+            message,
+            f"Твои баллы {scores[uid]['points']} добавлены в твой личный банк!"
+        )
+
+    save_scores(scores)
+
+    total = scores[uid]["points"]
+
+    bot.send_message(
+        GROUP_ID,
+        f"{random.choice(phrases)}\n"
+        f"{name}\nБаллы: {total}",
+        message_thread_id=BALANCE_THREAD
+    )
+
+# =====================
+# РЕЙТИНГ
+# =====================
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("!баллы"))
+def rating(message):
+
+    if not scores:
+        bot.reply_to(message, "Нет участников")
         return
 
-    match = re.search(r"-баллы\s+@?(\w+)\s+(\d+)", message.text.lower())
+    sorted_users = sorted(
+        scores.values(),
+        key=lambda x: x["points"],
+        reverse=True
+    )
+
+    text = "🏆 Рейтинг участников\n\n"
+
+    for i, user in enumerate(sorted_users[:10], 1):
+
+        medal = ""
+        if i == 1:
+            medal = "🥇 Самый лучший!"
+        elif i == 2:
+            medal = "🥈Ты почти лучший!"
+        elif i == 3:
+            medal = "🥉Догоняй!"
+
+        if i == len(sorted_users):
+            medal += " Работай лучше!"
+
+        text += f"{i}. {medal} {user['name']} — {user['points']} баллов\n"
+
+    bot.reply_to(message, text)
+
+# =====================
+# МАГАЗИН
+# =====================
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("!магазин"))
+def shop(message):
+
+    bot.reply_to(message,
+"""
+🛒 Магазин:
+
+!купить выговор — 30 баллов
+!купить отгул — 15 баллов
+""")
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("!купить"))
+def buy(message):
+
+    uid = str(message.from_user.id)
+
+    if uid not in scores:
+        bot.reply_to(message, "Нет баллов")
+        return
+
+    text = message.text.lower()
+
+    # Выговор
+    if "выговор" in text:
+
+        if scores[uid]["points"] < 30:
+            bot.reply_to(message, "Нужно 30 баллов")
+            return
+
+        scores[uid]["points"] -= 30
+        purchase_history.append(f"{message.from_user.first_name} снял выговор")
+
+        bot.reply_to(message, "✅ Выговор снят")
+
+    # Отгул
+    elif "отгул" in text:
+
+        if scores[uid]["points"] < 15:
+            bot.reply_to(message, "Нужно 15 баллов")
+            return
+
+        scores[uid]["points"] -= 15
+
+        end = datetime.datetime.now() + datetime.timedelta(hours=24)
+        vacation_time[uid] = end
+
+        purchase_history.append(
+            f"{message.from_user.first_name} купил отгул до {end}"
+        )
+
+        bot.reply_to(
+            message,
+            f"🎉 Отдых до: {end.strftime('%d.%m.%Y %H:%M')}"
+        )
+
+    save_scores(scores)
+
+# =====================
+# ИСТОРИЯ (АДМИНЫ)
+# =====================
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower() == "!история")
+def history(message):
+
+    admins = [a.user.id for a in bot.get_chat_administrators(message.chat.id)]
+
+    if message.from_user.id not in admins:
+        return
+
+    bot.reply_to(message, "\n".join(purchase_history[-20:]))
+
+# =====================
+# ВЫГОВОРЫ
+# =====================
+
+@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("#выговор"))
+def warnings(message):
+
+    admins = [a.user.id for a in bot.get_chat_administrators(message.chat.id)]
+
+    if message.from_user.id not in admins:
+        return
+
+    bot.forward_message(
+        GROUP_ID,
+        message.chat.id,
+        message.message_id,
+        message_thread_id=WARNING_THREAD
+    )
+
+    match = re.search(r"#выговор\s+@?(\w+)", message.text.lower())
+
     if not match:
         return
 
     username = match.group(1)
-    points = int(match.group(2))
 
-    for uid, data in scores.items():
-        if username.lower() in data["name"].lower():
-            scores[uid]["points"] = max(0, scores[uid]["points"] - points)
+    parts = message.text.split("\n")
+    reason = parts[1] if len(parts) > 1 else "Причина не указана"
 
-    save_json(scores)
+    target = find_user(username)
 
-    bot.reply_to(message, "Баллы сняты")
-
-# =========================
-# РЕЙТИНГ
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("!баллы"))
-def show_scores(message):
-
-    args = message.text.lower().split()
-
-    # ===== Подробнее =====
-    if len(args) >= 2 and args[1] == "подробнее":
-
-        if message.from_user.id != OWNER_ID:
-            return
-
-        global DETAIL_TEXT
-        DETAIL_TEXT = message.text.split(maxsplit=2)[2]
-
-        bot.reply_to(message, "Описание обновлено")
+    if not target:
         return
 
-    # ===== Рейтинг =====
-    if len(args) >= 2 and args[1] == "вся":
+    scores[target]["warnings"] += 1
+    num = scores[target]["warnings"]
 
-        if not scores:
-            bot.reply_to(message, "Нет участников")
-            return
+    text = f"""
+⚠️ Выговор!
 
-        sorted_scores = sorted(
-            scores.values(),
-            key=lambda x: x["points"],
-            reverse=True
-        )
+Пользователь: {scores[target]['name']}
+Выдал: {message.from_user.first_name}
 
-        text = "🏆 Рейтинг участников\n\n"
+Выговора: {num}/3
+Причина: {reason}
+"""
 
-        for i, data in enumerate(sorted_scores, 1):
+    if num == 1:
+        text += "Будь осторожнее ⚠️"
+    elif num == 2:
+        text += "Повышение под угрозой 😬"
+    elif num == 3:
+        text += "❌ Всё плохо"
 
-            if i == 1:
-                place = "Самый лучший!"
-            elif i == 2:
-                place = "Почти лучший!"
-            elif i == 3:
-                place = "Третье место!"
-            else:
-                place = ""
+    bot.send_message(
+        GROUP_ID,
+        text,
+        message_thread_id=WARNING_THREAD
+    )
 
-            if data["points"] == 0:
-                place = "Работай!"
-
-            text += f"{i}. {data['name']} — {data['points']} {place}\n"
-
-        bot.reply_to(message, text)
-        return
-
-    # ===== Свои баллы =====
-    uid = str(message.from_user.id)
-
-    if uid in scores:
-        bot.reply_to(message, f"У тебя {scores[uid]['points']} баллов")
-    else:
-        bot.reply_to(message, "У тебя 0 баллов. Работай!")
-
-# =========================
-# ПОДРОБНЕЕ
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower() == "!подробнее")
-def show_detail(message):
-    bot.reply_to(message, f"📜 Подробнее\n\n{DETAIL_TEXT}")
+    save_scores(scores)
 
 print("Bot started")
-bot.polling(none_stop=True)
-
-@bot.message_handler(func=lambda m: True)
-def get_thread_id(message):
-
-    print("Chat ID:", message.chat.id)
-    print("Thread ID:", message.message_thread_id)
-
-    bot.reply_to(
-        message,
-        f"""
-📌 ID чата: {message.chat.id}
-📌 ID ветки: {message.message_thread_id}
-"""
-    )
+bot.infinity_polling()
