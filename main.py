@@ -157,3 +157,17 @@ def show_detail(message):
 
 print("Bot started")
 bot.polling(none_stop=True)
+
+@bot.message_handler(func=lambda m: True)
+def get_thread_id(message):
+
+    print("Chat ID:", message.chat.id)
+    print("Thread ID:", message.message_thread_id)
+
+    bot.reply_to(
+        message,
+        f"""
+📌 ID чата: {message.chat.id}
+📌 ID ветки: {message.message_thread_id}
+"""
+    )
