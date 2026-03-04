@@ -110,7 +110,8 @@ def add_points(message):
 
         bot.reply_to(
             message,
-            f"Твои баллы {scores[uid]['points']} добавлены в твой личный банк!"
+            f"Баллы добавлены в твой личный банк! 
+у тебя {scores[uid]['points']} баллов "
         )
 
     save_scores(scores)
