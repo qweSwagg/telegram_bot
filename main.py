@@ -9,7 +9,8 @@ from aiogram.enums import ParseMode
 # НАСТРОЙКИ
 # =========================
 
-TOKEN = "YOUR_BOT_TOKEN"
+import os
+TOKEN = os.getenv("TOKEN")
 
 OWNER_ID = 123456789
 
