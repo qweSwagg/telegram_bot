@@ -19,13 +19,15 @@ SHOP_THREAD = 952
 USERS_FILE = "users.json"
 WARNS_FILE = "warns.json"
 
-# Создаем файлы если их нет
+# Создаём файлы, если их нет
 for file in [USERS_FILE, WARNS_FILE]:
     if not os.path.exists(file):
         with open(file, "w") as f:
             json.dump({}, f)
 
-
+# =========================
+# Работа с базой
+# =========================
 def load_users():
     with open(USERS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -60,7 +62,7 @@ def register_user(user):
 
 
 # =========================
-# Поиск пользователя по username или id
+# Поиск пользователя
 # =========================
 def find_user(identifier):
     identifier = identifier.lower().replace("@", "")
@@ -74,28 +76,8 @@ def find_user(identifier):
 
 
 # =========================
-# Словарь для последнего сообщения выговора
-last_warn_message = {}
-
-
+# Склонение баллов
 # =========================
-# Проверка и уведомление об окончании отгула
-def vacation_checker():
-    while True:
-        users = load_users()
-        for uid, data in users.items():
-            if "vacation_end" in data and data["vacation_end"]:
-                end_time = datetime.datetime.strptime(data["vacation_end"], "%Y-%m-%d %H:%M:%S.%f")
-                if datetime.datetime.now() >= end_time:
-                    user_name = f"@{data['username']}" if data.get("username") else "Пользователь"
-                    bot.send_message(GROUP_ID, f"⏰ {user_name} твой отгул окончился, приступай к работе!")
-                    users[uid]["vacation_end"] = None
-                    save_users(users)
-        time.sleep(60)
-
-
-# =========================
-# Склонение слов "балл"
 def points_text(amount):
     if amount == 1:
         return "1 балл"
@@ -106,7 +88,36 @@ def points_text(amount):
 
 
 # =========================
+# Последние сообщения выговоров для удаления
+# =========================
+last_warn_messages = {}  # {user_id: [msg_id1, msg_id2, msg_id3]}
+
+# =========================
+# Проверка окончания отгула
+# =========================
+def vacation_checker():
+    while True:
+        users = load_users()
+        changed = False
+        for uid, data in users.items():
+            if data.get("vacation_end"):
+                try:
+                    end_time = datetime.datetime.strptime(data["vacation_end"], "%Y-%m-%d %H:%M:%S.%f")
+                    if datetime.datetime.now() >= end_time:
+                        user_name = f"@{data['username']}" if data.get("username") else "Пользователь"
+                        bot.send_message(GROUP_ID, f"⏰ {user_name} твой отгул окончился, приступай к работе!")
+                        users[uid]["vacation_end"] = None
+                        changed = True
+                except Exception as e:
+                    print("Ошибка парсинга vacation_end:", e)
+        if changed:
+            save_users(users)
+        time.sleep(60)
+
+
+# =========================
 # Обработчик сообщений
+# =========================
 @bot.message_handler(func=lambda m: True)
 def all_messages(message):
     register_user(message.from_user)
@@ -118,9 +129,9 @@ def all_messages(message):
     # ===== !мой банк =====
     if text == "!мой банк":
         points = users.get(uid, {}).get("points", 0)
-        bot.reply_to(message, f"💰 В вашем личном банке {points} {points_text(points)}")
+        bot.reply_to(message, f"💰 В вашем личном банке {points_text(points)}")
 
-    # ===== #баллы +число =====
+    # ===== #баллы =====
     if "#баллы" in text:
         match = re.search(r"#баллы\s*[+]?\s*(\d+)", text)
         if not match:
@@ -130,7 +141,7 @@ def all_messages(message):
             users[uid] = {"username": message.from_user.username, "points": 0, "vacation_end": None}
         users[uid]["points"] += points
         save_users(users)
-        # Сообщение в тему баллов
+
         bot.send_message(GROUP_ID, "🎁", message_thread_id=BALANCE_THREAD)
         bot.forward_message(GROUP_ID, message.chat.id, message.message_id, message_thread_id=BALANCE_THREAD)
         bot.send_message(
@@ -175,7 +186,7 @@ def all_messages(message):
         if uid not in users:
             bot.reply_to(message, "❌ У тебя нет баллов")
             return
-        # Выговор
+        # ===== Выговор =====
         if "выговор" in text:
             if users[uid]["points"] < 30:
                 bot.reply_to(message, "❌ Нужно 30 баллов")
@@ -184,15 +195,15 @@ def all_messages(message):
             warns[uid] = max(0, warns.get(uid, 0) - 1)
             save_warns(warns)
             save_users(users)
-            # удаляем последнее сообщение с выговором
-            if uid in last_warn_message:
+            # удаляем все три сообщения выговора
+            for msg_id in last_warn_messages.get(uid, []):
                 try:
-                    bot.delete_message(GROUP_ID, last_warn_message[uid])
+                    bot.delete_message(GROUP_ID, msg_id)
                 except:
                     pass
-                last_warn_message.pop(uid)
+            last_warn_messages.pop(uid, None)
             bot.reply_to(message, f"✅ Выговор снят! ⚠ Осталось: {warns.get(uid,0)}")
-        # Отгул
+        # ===== Отгул =====
         elif "отгул" in text:
             if users[uid]["points"] < 15:
                 bot.reply_to(message, "❌ Нужно 15 баллов")
@@ -200,7 +211,10 @@ def all_messages(message):
             users[uid]["points"] -= 15
             now = datetime.datetime.now()
             if users[uid].get("vacation_end"):
-                users[uid]["vacation_end"] = datetime.datetime.strptime(users[uid]["vacation_end"], "%Y-%m-%d %H:%M:%S.%f")
+                try:
+                    users[uid]["vacation_end"] = datetime.datetime.strptime(users[uid]["vacation_end"], "%Y-%m-%d %H:%M:%S.%f")
+                except:
+                    users[uid]["vacation_end"] = now
             else:
                 users[uid]["vacation_end"] = now
             users[uid]["vacation_end"] += datetime.timedelta(hours=24)
@@ -221,89 +235,91 @@ def all_messages(message):
         if not target_id:
             bot.reply_to(message, f"❌ Пользователь @{target_username} не найден")
             return
+        # увеличиваем количество выговоров
         warns[target_id] = warns.get(target_id, 0) + 1
         save_warns(warns)
 
         admin_user = f"🎩 @{message.from_user.username}" if message.from_user.username else message.from_user.first_name
         target_user = f"⚠ @{users[target_id]['username']}" if users[target_id].get("username") else target_username
 
-        # Отправка в тему выговоров
+        # отправка в тему выговоров: сначала "⚠ Новый выговор"
+        bot.send_message(GROUP_ID, "⚠ Новый выговор", message_thread_id=WARNING_THREAD)
+        # пересылаем само сообщение
+        bot.forward_message(GROUP_ID, message.chat.id, message.message_id, message_thread_id=WARNING_THREAD)
+        # красивое сообщение
         msg = bot.send_message(
             GROUP_ID,
-            f"⚠ Выговор {warns[target_id]}/3\n👤 {target_user}\n👮 Выдал: {admin_user}\n\n📝 Причина:\n{reason}",
+            f"━━━━━━━━━━━━━━━\n"
+            f"⚠ Выговор {warns[target_id]}/3\n"
+            f"👤 {target_user}\n"
+            f"👮 Выдал: {admin_user}\n\n"
+            f"📝 Причина:\n{reason}\n"
+            f"━━━━━━━━━━━━━━━",
             message_thread_id=WARNING_THREAD
         )
-        last_warn_message[target_id] = msg.message_id
+        last_warn_messages[target_id] = [msg.message_id]  # сохраняем для удаления
 
-        # Сообщение в чат с эмодзи красиво
+        # Сообщение в чат красиво
         bot.send_message(
             GROUP_ID,
             f"🎯 {admin_user} выговор успешно выдан админу {target_user}\n\n⏰ {target_user} будь осторожнее!"
         )
 
-    # ===== !подарить баллы (только OWNER) =====
-    if text.startswith("!подарить баллы"):
-        if message.from_user.id != OWNER_ID:
-            return
-        match = re.search(r"!подарить баллы\s+@?(\w+)\s+(\d+)", message.text)
-        target_id = None
-        amount = 0
-        if message.reply_to_message:
-            target_id = str(message.reply_to_message.from_user.id)
-            amount = int(message.text.split()[-1])
-        elif match:
-            target_username = match.group(1)
-            target_id = find_user(target_username)
-            amount = int(match.group(2))
-        if not target_id or amount <= 0:
-            return
-        if target_id not in users:
-            users[target_id] = {"username": None, "points": 0, "vacation_end": None}
-        users[target_id]["points"] += amount
-        save_users(users)
-        sender = f"@{message.from_user.username}" if message.from_user.username else "Владелец"
-        receiver = f"@{users[target_id]['username']}" if users[target_id].get("username") else "Пользователь"
-        bot.send_message(
-            GROUP_ID,
-            f"🎁 Поздравляю {receiver}, тебе подарили {points_text(amount)}!\n\n👏 Благодари {sender} за щедрость!"
-        )
-
-    # ===== !дать баллы (для всех) =====
+    # ===== !дать баллы =====
     if text.startswith("!дать баллы"):
-        target_id = None
-        amount = 0
-        if message.reply_to_message:
-            target_id = str(message.reply_to_message.from_user.id)
-            try:
-                amount = int(message.text.split()[-1])
-            except:
-                return
-        else:
-            match = re.search(r"!дать баллы\s+@?(\w+)\s+(\d+)", message.text)
-            if match:
-                target_username = match.group(1)
-                target_id = find_user(target_username)
-                amount = int(match.group(2))
-        if not target_id or amount <= 0:
+        parts = message.text.split()
+        if len(parts) < 3 and not message.reply_to_message:
+            bot.reply_to(message, "❌ Используйте: !дать баллы @username количество или ответом на сообщение")
             return
-        if uid not in users or users[uid]["points"] < amount:
+
+        # Получатель
+        if message.reply_to_message:
+            target_user = message.reply_to_message.from_user
+            target_id = str(target_user.id)
+        else:
+            target_username = parts[2].replace("@", "")
+            target_id = find_user(target_username)
+            if not target_id:
+                bot.reply_to(message, f"❌ Пользователь @{target_username} не найден")
+                return
+
+        # Количество
+        try:
+            if message.reply_to_message:
+                amount = int(parts[1])
+            else:
+                amount = int(parts[3])
+        except:
+            bot.reply_to(message, "❌ Неверное количество баллов")
+            return
+
+        giver_id = str(message.from_user.id)
+        if users.get(giver_id, {}).get("points", 0) < amount:
             bot.reply_to(message, "❌ У вас недостаточно баллов")
             return
+
+        users[giver_id]["points"] -= amount
         if target_id not in users:
-            users[target_id] = {"username": None, "points": 0, "vacation_end": None}
-        users[uid]["points"] -= amount
+            users[target_id] = {"username": target_user.username if message.reply_to_message else target_username, "points": 0, "vacation_end": None}
         users[target_id]["points"] += amount
         save_users(users)
-        giver = f"@{users[uid]['username']}" if users[uid].get("username") else "Пользователь"
-        receiver = f"@{users[target_id]['username']}" if users[target_id].get("username") else "Пользователь"
+
+        giver_name = f"🎁 @{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+        receiver_name = f"🎉 @{users[target_id]['username']}" if users[target_id].get("username") else "Пользователь"
+
         bot.send_message(
-            GROUP_ID,
-            f"🎁 Поздравляю {receiver}, ты получил {points_text(amount)}!\n\n👏 Благодари {giver} за щедрость!"
+            message.chat.id,
+            f"💸 {giver_name} вы отдали {points_text(amount)} {receiver_name}"
         )
 
+        bot.send_message(
+            message.chat.id,
+            f"🎊 Поздравляю {receiver_name}, вы получили {points_text(amount)}!\n🙏 Благодарите {giver_name} за щедрость"
+        )
 
 # =========================
 # Запуск проверки отгулов
+# =========================
 threading.Thread(target=vacation_checker, daemon=True).start()
 
 print("Бот запущен!")
