@@ -1,10 +1,9 @@
 import telebot
 import json
-import re
 import os
 import datetime
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("TOKEN")  # Вставь сюда токен бота или через Environment Variables
 bot = telebot.TeleBot(TOKEN)
 
 OWNER_ID = 7548603865
@@ -14,291 +13,135 @@ BALANCE_THREAD = 685
 WARNING_THREAD = 865
 SHOP_THREAD = 952
 
-# =========================
-# БАЗА
-# =========================
+# Файлы базы рядом с main.py
+USERS_FILE = "users.json"
+WARNS_FILE = "warns.json"
 
-def load_db():
-    try:
-        with open("scores.json", "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+# Создаем файлы если их нет
+for file in [USERS_FILE, WARNS_FILE]:
+    if not os.path.exists(file):
+        with open(file, "w") as f:
+            json.dump({}, f)
 
-def save_db(data):
-    with open("scores.json", "w", encoding="utf-8") as f:
+
+def load_users():
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_users(data):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-scores = load_db()
+
+def load_warns():
+    with open(WARNS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_warns(data):
+    with open(WARNS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+
+# Регистрируем всех пользователей, чтобы бот их видел
+def register_user(user):
+    users = load_users()
+    uid = str(user.id)
+    if uid not in users:
+        users[uid] = {"username": user.username, "points": 0}
+    else:
+        users[uid]["username"] = user.username  # обновляем username
+    save_users(users)
+
 
 # =========================
-# ПОИСК ПОЛЬЗОВАТЕЛЯ
+# КОМАНДЫ И СОБЫТИЯ
 # =========================
 
-def find_user(identifier):
+@bot.message_handler(func=lambda m: True)
+def all_messages(message):
+    register_user(message.from_user)
+    text = message.text.lower() if message.text else ""
 
-    identifier = identifier.lower()
+    # Команда: !мой банк
+    if text == "!мой банк":
+        users = load_users()
+        uid = str(message.from_user.id)
+        points = users.get(uid, {}).get("points", 0)
+        bot.reply_to(message, f"💰 В вашем личном банке {points} баллов")
 
-    for uid, data in scores.items():
-
-        if identifier == uid:
-            return uid
-
-        if identifier in data["name"].lower():
-            return uid
-
-    return None
-
-# =========================
-# ДОБАВЛЕНИЕ БАЛЛОВ
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and "#баллы" in m.text.lower())
-def add_points(message):
-
-    if re.search(r"#балы", message.text.lower()):
-        bot.reply_to(message, "❌ Ошибка! Правильно писать #баллы")
-        return
-
-    uid = str(message.from_user.id)
-    name = message.from_user.first_name
-
-    match = re.search(r"#баллы\s*[+]?\s*(\d+)", message.text.lower())
-
-    if not match:
-        return
-
-    points = int(match.group(1))
-
-    if uid not in scores:
-        scores[uid] = {
-            "name": name,
-            "points": 0,
-            "warnings": 0
-        }
-
-    scores[uid]["points"] += points
-    save_db(scores)
-
-    bot.send_message(GROUP_ID, "🎁", message_thread_id=BALANCE_THREAD)
-
-    bot.forward_message(
-        GROUP_ID,
-        message.chat.id,
-        message.message_id,
-        message_thread_id=BALANCE_THREAD
-    )
-
-    bot.send_message(
-        GROUP_ID,
-        f"━━━━━━━━━━━━━━━\n"
-        f"👤 {name}\n"
-        f"🏦 Твой банк: {scores[uid]['points']} баллов\n"
-        f"━━━━━━━━━━━━━━━",
-        message_thread_id=BALANCE_THREAD
-    )
-
-    bot.reply_to(
-        message,
-        f"💰 Баллы {points} добавлены!\n"
-        f"🏦 Сейчас у тебя {scores[uid]['points']} баллов"
-    )
-
-# =========================
-# МОИ БАЛЛЫ
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and "!мои баллы" in m.text.lower())
-def my_balance(message):
-
-    uid = str(message.from_user.id)
-    name = message.from_user.first_name
-
-    if uid not in scores:
-        bot.reply_to(message, "У вас пока 0 баллов")
-        return
-
-    bot.reply_to(
-        message,
-        f"🏦 Это ваш личный банк, {name}\n\n"
-        f"💰 У вас {scores[uid]['points']} баллов"
-    )
-
-# =========================
-# РЕЙТИНГ
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("!баллы"))
-def rating(message):
-
-    if not scores:
-        bot.reply_to(message, "Нет участников")
-        return
-
-    sorted_users = sorted(
-        scores.values(),
-        key=lambda x: x["points"],
-        reverse=True
-    )
-
-    text = "🏆 Рейтинг участников\n\n"
-
-    for i, user in enumerate(sorted_users, 1):
-
-        medal = ""
-
-        if i == 1:
-            medal = " Самый лучший!"
-        elif i == 2:
-            medal = " Ты почти лучший!"
-        elif i == 3:
-            medal = " Работай усерднее!"
-
-        icon = ['🥇','🥈','🥉'][i-1] if i <= 3 else "▫"
-
-        text += f"{icon} {user['name']} — {user['points']} баллов{medal}\n"
-
-    bot.reply_to(message, text)
-
-# =========================
-# МАГАЗИН (ТОЛЬКО ВЕТКА 952)
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and "!магазин" in m.text.lower())
-def shop(message):
-
-    if message.message_thread_id != SHOP_THREAD:
-        return
-
-    bot.reply_to(
-        message,
-        "🛒 Магазин\n\n"
-        "🎯 Снять выговор — 30 баллов\n"
-        "🌴 Отгул — 15 баллов (суммируется)\n\n"
-        "Команды:\n"
-        "!купить выговор\n"
-        "!купить отгул"
-    )
-
-# =========================
-# ПОКУПКИ (ТОЛЬКО 952)
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and "!купить" in m.text.lower())
-def buy(message):
-
-    if message.message_thread_id != SHOP_THREAD:
-        return
-
-    uid = str(message.from_user.id)
-
-    if uid not in scores:
-        bot.reply_to(message, "❌ У тебя нет баллов")
-        return
-
-    text = message.text.lower()
-
-    # ===== Снять выговор =====
-
-    if "выговор" in text:
-
-        if scores[uid]["points"] < 30:
-            bot.reply_to(message, "❌ Нужно 30 баллов")
+    # Команда: #выговор
+    if text.startswith("#выговор"):
+        if not message.reply_to_message:
+            bot.reply_to(message, "❌ Ответьте на сообщение пользователя, которому хотите выдать выговор")
             return
 
-        scores[uid]["points"] -= 30
-        scores[uid]["warnings"] = max(0, scores[uid]["warnings"] - 1)
+        admin = message.from_user
+        target = message.reply_to_message.from_user
 
-        bot.reply_to(
-            message,
-            f"✅ Выговор снят!\n"
-            f"⚠ Осталось: {scores[uid]['warnings']}"
+        warns = load_warns()
+        target_id = str(target.id)
+        warns[target_id] = warns.get(target_id, 0) + 1
+        save_warns(warns)
+
+        admin_user = f"@{admin.username}" if admin.username else admin.first_name
+        target_user = f"@{target.username}" if target.username else target.first_name
+
+        bot.send_message(
+            message.chat.id,
+            f"{admin_user} выговор успешно выдан админу {target_user}\n\n"
+            f"{target_user} будь осторожнее!"
         )
 
-    # ===== Отгул =====
+    # Команда: #баллы +число
+    if "#баллы" in text:
+        import re
+        match = re.search(r"#баллы\s*[+]?\s*(\d+)", text)
+        if not match:
+            return
+        points = int(match.group(1))
 
-    elif "отгул" in text:
+        uid = str(message.from_user.id)
+        users = load_users()
+        if uid not in users:
+            users[uid] = {"username": message.from_user.username, "points": 0}
 
-        if scores[uid]["points"] < 15:
-            bot.reply_to(message, "❌ Нужно 15 баллов")
+        users[uid]["points"] += points
+        save_users(users)
+
+        bot.send_message(GROUP_ID, "🎁", message_thread_id=BALANCE_THREAD)
+        bot.forward_message(GROUP_ID, message.chat.id, message.message_id, message_thread_id=BALANCE_THREAD)
+        bot.send_message(
+            GROUP_ID,
+            f"━━━━━━━━━━━━━━━\n"
+            f"👤 {message.from_user.first_name}\n"
+            f"🏦 Твой банк: {users[uid]['points']} баллов\n"
+            f"━━━━━━━━━━━━━━━",
+            message_thread_id=BALANCE_THREAD
+        )
+        bot.reply_to(message, f"💰 Баллы {points} добавлены!\n🏦 Сейчас у тебя {users[uid]['points']} баллов")
+
+    # Команда: !баллы (рейтинг)
+    if text.startswith("!баллы"):
+        users = load_users()
+        if not users:
+            bot.reply_to(message, "Нет участников")
             return
 
-        scores[uid]["points"] -= 15
+        sorted_users = sorted(users.items(), key=lambda x: x[1]["points"], reverse=True)
+        text_out = "🏆 Рейтинг участников\n\n"
+        for i, (uid, user) in enumerate(sorted_users, 1):
+            medal = ""
+            if i == 1:
+                medal = " Самый лучший!"
+            elif i == 2:
+                medal = " Ты почти лучший!"
+            elif i == 3:
+                medal = " Работай усерднее!"
+            icon = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else "▫"
+            text_out += f"{icon} {user['username'] or user['username']} — {user['points']} баллов{medal}\n"
+        bot.reply_to(message, text_out)
 
-        now = datetime.datetime.now()
-
-        if "vacation_end" not in scores[uid]:
-            scores[uid]["vacation_end"] = now
-        else:
-            scores[uid]["vacation_end"] = datetime.datetime.strptime(
-                str(scores[uid]["vacation_end"]),
-                "%Y-%m-%d %H:%M:%S.%f"
-            )
-
-        scores[uid]["vacation_end"] += datetime.timedelta(hours=24)
-
-        end = scores[uid]["vacation_end"]
-
-        bot.reply_to(
-            message,
-            f"🌴 Отгул продлён!\n"
-            f"До: {end.strftime('%d.%m.%Y %H:%M')}"
-        )
-
-    save_db(scores)
-
-# =========================
-# ВЫГОВОРЫ
-# =========================
-
-@bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("#выговор"))
-def warning(message):
-
-    admins = [a.user.id for a in bot.get_chat_administrators(message.chat.id)]
-
-    if message.from_user.id not in admins:
-        return
-
-    bot.send_message(GROUP_ID, "⚠ Новый выговор", message_thread_id=WARNING_THREAD)
-
-    bot.forward_message(
-        GROUP_ID,
-        message.chat.id,
-        message.message_id,
-        message_thread_id=WARNING_THREAD
-    )
-
-    match = re.search(r"#выговор\s+@?(\w+)", message.text.lower())
-
-    if not match:
-        return
-
-    username = match.group(1)
-
-    parts = message.text.split("\n")
-    reason = parts[1] if len(parts) > 1 else "Причина не указана"
-
-    target = find_user(username)
-
-    if not target:
-        bot.send_message(message.chat.id, "❌ Пользователь не найден")
-        return
-
-    scores[target]["warnings"] += 1
-    num = scores[target]["warnings"]
-
-    text = (
-        f"━━━━━━━━━━━━━━━\n"
-        f"⚠ Выговор {num}/3\n"
-        f"👤 {scores[target]['name']}\n"
-        f"👮 Выдал: {message.from_user.first_name}\n\n"
-        f"📝 Причина:\n{reason}\n"
-        f"━━━━━━━━━━━━━━━"
-    )
-
-    bot.send_message(GROUP_ID, text, message_thread_id=WARNING_THREAD)
-
-    save_db(scores)
-
-print("Bot started")
+print("Бот запущен!")
 bot.infinity_polling()
