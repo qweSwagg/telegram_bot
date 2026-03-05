@@ -146,7 +146,10 @@ def all_messages(message):
         bot.forward_message(GROUP_ID, message.chat.id, message.message_id, message_thread_id=BALANCE_THREAD)
         bot.send_message(
             GROUP_ID,
-            f"━━━━━━━━━━━━━━━\n👤 {message.from_user.first_name}\n🏦 Твой банк: {users[uid]['points']} {points_text(users[uid]['points'])}\n━━━━━━━━━━━━━━━",
+            f"━━━━━━━━━━━━━━━\n"
+            f"👤 {message.from_user.first_name}\n"
+            f"🏦 Твой банк: {points_text(users[uid]['points'])}\n"
+            f"━━━━━━━━━━━━━━━",
             message_thread_id=BALANCE_THREAD
         )
         bot.reply_to(message, f"💰 Баллы {points_text(points)} добавлены!\n🏦 Сейчас у тебя {points_text(users[uid]['points'])}")
@@ -167,7 +170,7 @@ def all_messages(message):
             elif i == 3:
                 medal = " Работай усерднее!"
             icon = ["🥇", "🥈", "🥉"][i - 1] if i <= 3 else "▫"
-            text_out += f"{icon} {user['username']} — {user['points']} {points_text(user['points'])}{medal}\n"
+            text_out += f"{icon} {user['username']} — {points_text(user['points'])}{medal}\n"
         bot.reply_to(message, text_out)
 
     # ===== !магазин =====
@@ -188,6 +191,10 @@ def all_messages(message):
             return
         # ===== Выговор =====
         if "выговор" in text:
+            if warns.get(uid, 0) == 0:
+                user_name = f"@{users[uid]['username']}" if users[uid].get("username") else "Пользователь"
+                bot.reply_to(message, f"❌ {user_name} у тебя нет выговоров уже как 0 часов")
+                return
             if users[uid]["points"] < 30:
                 bot.reply_to(message, "❌ Нужно 30 баллов")
                 return
@@ -195,7 +202,7 @@ def all_messages(message):
             warns[uid] = max(0, warns.get(uid, 0) - 1)
             save_warns(warns)
             save_users(users)
-            # удаляем все три сообщения выговора
+            # удаляем все сообщения выговора
             for msg_id in last_warn_messages.get(uid, []):
                 try:
                     bot.delete_message(GROUP_ID, msg_id)
@@ -221,7 +228,7 @@ def all_messages(message):
             save_users(users)
             bot.reply_to(message, f"🌴 Отгул продлён! До: {users[uid]['vacation_end'].strftime('%d.%m.%Y %H:%M')}")
 
-    # ===== #выговор @username =====
+    # ===== #выговор =====
     if text.startswith("#выговор"):
         parts = message.text.split("\n")
         first_line = parts[0]
@@ -265,57 +272,6 @@ def all_messages(message):
             f"🎯 {admin_user} выговор успешно выдан админу {target_user}\n\n⏰ {target_user} будь осторожнее!"
         )
 
-    # ===== !дать баллы =====
-    if text.startswith("!дать баллы"):
-        parts = message.text.split()
-        if len(parts) < 3 and not message.reply_to_message:
-            bot.reply_to(message, "❌ Используйте: !дать баллы @username количество или ответом на сообщение")
-            return
-
-        # Получатель
-        if message.reply_to_message:
-            target_user = message.reply_to_message.from_user
-            target_id = str(target_user.id)
-        else:
-            target_username = parts[2].replace("@", "")
-            target_id = find_user(target_username)
-            if not target_id:
-                bot.reply_to(message, f"❌ Пользователь @{target_username} не найден")
-                return
-
-        # Количество
-        try:
-            if message.reply_to_message:
-                amount = int(parts[1])
-            else:
-                amount = int(parts[3])
-        except:
-            bot.reply_to(message, "❌ Неверное количество баллов")
-            return
-
-        giver_id = str(message.from_user.id)
-        if users.get(giver_id, {}).get("points", 0) < amount:
-            bot.reply_to(message, "❌ У вас недостаточно баллов")
-            return
-
-        users[giver_id]["points"] -= amount
-        if target_id not in users:
-            users[target_id] = {"username": target_user.username if message.reply_to_message else target_username, "points": 0, "vacation_end": None}
-        users[target_id]["points"] += amount
-        save_users(users)
-
-        giver_name = f"🎁 @{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-        receiver_name = f"🎉 @{users[target_id]['username']}" if users[target_id].get("username") else "Пользователь"
-
-        bot.send_message(
-            message.chat.id,
-            f"💸 {giver_name} вы отдали {points_text(amount)} {receiver_name}"
-        )
-
-        bot.send_message(
-            message.chat.id,
-            f"🎊 Поздравляю {receiver_name}, вы получили {points_text(amount)}!\n🙏 Благодарите {giver_name} за щедрость"
-        )
 
 # =========================
 # Запуск проверки отгулов
