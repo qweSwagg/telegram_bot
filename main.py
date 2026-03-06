@@ -267,91 +267,31 @@ def all_messages(message):
             f"🎯 {admin_user} выговор успешно выдан админу {target_user}\n\n⏰ {target_user} будь осторожнее!"
         )
 
-    # ===== !дать баллы =====
-    if text.startswith("!дать баллы"):
-        reply = message.reply_to_message
-        args = message.text.split()
-        sender_id = str(message.from_user.id)
-        register_user(message.from_user)
-
-        if reply:  # ответ на сообщение
-            target_user = reply.from_user
-            target_id = str(target_user.id)
-            if len(args) < 2:
-                bot.reply_to(message, "❌ Укажи количество баллов")
-                return
-            try:
-                points = int(args[1])
-            except:
-                bot.reply_to(message, "❌ Неверное число")
-                return
-            register_user(target_user)
-        else:  # через @username
-            if len(args) < 3:
-                bot.reply_to(message, "❌ Используй: !дать баллы @username <кол-во>")
-                return
-            target_username = args[1].replace("@", "")
-            target_id = find_user(target_username)
-            if not target_id:
-                bot.reply_to(message, f"❌ Пользователь @{target_username} не найден")
-                return
-            try:
-                points = int(args[2])
-            except:
-                bot.reply_to(message, "❌ Неверное число")
-                return
-
-        if users[sender_id]["points"] < points:
-            bot.reply_to(message, "❌ У тебя недостаточно баллов")
-            return
-
-        users[sender_id]["points"] -= points
-        users[target_id]["points"] += points
-        save_users(users)
-
-        sender_name = f"@{users[sender_id].get('username')}" if users[sender_id].get("username") else message.from_user.first_name
-        target_name = f"@{users[target_id].get('username')}" if users[target_id].get("username") else "Пользователь"
-
-        bot.reply_to(message, f"🎉 {target_name} поздравляем! Ты получил {points_text(points)}\n👏 Благодари {sender_name} за щедрость")
-
-    # ===== !подарить баллы =====
-    if text.startswith("!подарить баллы"):
+    # ===== !снять выговор ===== (только владелец) =====
+    if text.startswith("!снять выговор"):
         if uid != str(OWNER_ID):
             bot.reply_to(message, "❌ Только владелец может использовать эту команду")
             return
-        reply = message.reply_to_message
         args = message.text.split()
-        if reply:  # ответом
-            target_user = reply.from_user
-            target_id = str(target_user.id)
-            if len(args) < 2:
-                bot.reply_to(message, "❌ Укажи количество баллов")
-                return
+        if len(args) < 2:
+            bot.reply_to(message, "❌ Укажи юзера: !снять выговор @username")
+            return
+        target_username = args[1].replace("@", "")
+        target_id = find_user(target_username)
+        if not target_id:
+            bot.reply_to(message, f"❌ Пользователь @{target_username} не найден")
+            return
+        warns[target_id] = max(0, warns.get(target_id, 0) - 1)
+        save_warns(warns)
+        # удаляем все сообщения выговора
+        for msg_id in last_warn_messages.get(target_id, []):
             try:
-                points = int(args[1])
+                bot.delete_message(GROUP_ID, msg_id)
             except:
-                bot.reply_to(message, "❌ Неверное число")
-                return
-            register_user(target_user)
-        else:  # через @username
-            if len(args) < 3:
-                bot.reply_to(message, "❌ Используй: !подарить баллы @username <кол-во>")
-                return
-            target_username = args[1].replace("@", "")
-            target_id = find_user(target_username)
-            if not target_id:
-                bot.reply_to(message, f"❌ Пользователь @{target_username} не найден")
-                return
-            try:
-                points = int(args[2])
-            except:
-                bot.reply_to(message, "❌ Неверное число")
-                return
-        users[target_id]["points"] += points
-        save_users(users)
-        target_name = f"@{users[target_id].get('username')}" if users[target_id].get("username") else "Пользователь"
-        owner_name = f"@{users[uid].get('username')}" if users[uid].get("username") else "Владелец"
-        bot.reply_to(message, f"🎉 Поздравляю {target_name}! Тебе подарили {points_text(points)}\n👏 Благодари {owner_name} за щедрость")
+                pass
+        last_warn_messages.pop(target_id, None)
+        target_name = f"@{users[target_id]['username']}" if users[target_id].get("username") else "Пользователь"
+        bot.reply_to(message, f"🎉 {target_name} — возрадуйся! Тебе сняли выговор, поздравляю!")
 
 
 # =========================
